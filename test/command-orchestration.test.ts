@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { setLocalCompletionIndexForTests } from "../src/commands/completion.js";
-import {
-  getExtensionsAutocompleteItems,
-  resolveCommand,
-  runResolvedCommand,
-} from "../src/commands/registry.js";
+import { setLocalCompletionIndexForTests } from "../src/commands/completion-state.js";
+import { getExtensionsAutocompleteItems } from "../src/commands/autocomplete.js";
+import { resolveCommand, runResolvedCommand } from "../src/commands/registry.js";
 import { createMockHarness } from "./helpers/mocks.js";
 import { mockPackageCatalog } from "./helpers/package-catalog.js";
 

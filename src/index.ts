@@ -1,7 +1,7 @@
 /**
  * Extensions Manager - Enhanced UI/UX for managing Pi extensions and packages
  *
- * Entry point - exports the main extension function
+ * Keep this entrypoint small: manager UI and session-only work are loaded on demand.
  */
 import {
   type ExtensionAPI,
@@ -9,76 +9,21 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
-import { createAutoUpdateNotificationHandler } from "./commands/auto-update.js";
-import { refreshLocalCompletionIndex } from "./commands/completion.js";
-import {
-  getExtensionsAutocompleteItems,
-  resolveCommand,
-  runResolvedCommand,
-  showNonInteractiveHelp,
-  showUnknownCommandMessage,
-} from "./commands/registry.js";
-import { installPackage } from "./packages/install.js";
-import { restorePiTitle } from "./ui/workspace/title.js";
-import {
-  type ContextProvider,
-  startAutoUpdateTimer,
-  stopAutoUpdateTimer,
-} from "./utils/auto-update.js";
-import { tokenizeArgs } from "./utils/command.js";
-import { isPackageSource } from "./utils/format.js";
 import { logWarning, setConsoleDiagnosticsEnabled } from "./utils/log.js";
-import { isProjectTrusted } from "./utils/mode.js";
-import { clearReloadRequired } from "./utils/reload-state.js";
-import { getAutoUpdateConfig, hydrateAutoUpdateConfig } from "./utils/settings.js";
-import { updateExtmgrStatus } from "./utils/status.js";
-import { wasContextReloaded } from "./utils/ui-helpers.js";
-
-async function executeExtensionsCommand(
-  args: string,
-  ctx: ExtensionCommandContext,
-  pi: ExtensionAPI
-): Promise<void> {
-  try {
-    const tokens = tokenizeArgs(args);
-    const resolved = resolveCommand(tokens);
-
-    if (resolved) {
-      await runResolvedCommand(resolved, ctx, pi);
-      return;
-    }
-
-    const rawSubcommand = tokens[0];
-    if (rawSubcommand && isPackageSource(rawSubcommand)) {
-      await installPackage(args.trim(), ctx, pi);
-      return;
-    }
-
-    if (ctx.hasUI) {
-      showUnknownCommandMessage(rawSubcommand, ctx);
-    } else {
-      showNonInteractiveHelp(ctx);
-    }
-  } finally {
-    // Workspace screens set the terminal title while open; hand it back to
-    // pi's format on the way out. After an in-process reload pi re-asserts
-    // its own title, so skip touching the stale context.
-    if (!wasContextReloaded(ctx)) {
-      restorePiTitle(ctx);
-    }
-  }
-}
 
 export default function extensionsManager(pi: ExtensionAPI) {
+  let activeCtx: ExtensionContext | undefined;
+  let stopSessionRuntime: (() => void) | undefined;
+
   pi.registerCommand("extensions", {
     description: "Manage local extensions and browse/install community packages",
-    getArgumentCompletions: getExtensionsAutocompleteItems,
+    getArgumentCompletions: async (prefix) => {
+      const { getExtensionsAutocompleteItems } = await import("./commands/autocomplete.js");
+      return getExtensionsAutocompleteItems(prefix);
+    },
     handler: async (args, ctx) => {
-      await executeExtensionsCommand(args, ctx, pi);
-      if (wasContextReloaded(ctx)) return;
-      await refreshLocalCompletionIndex(ctx.cwd, isProjectTrusted(ctx)).catch((error) => {
-        logWarning("Failed to refresh local completions:", error);
-      });
+      const { handleExtensionsCommand } = await import("./manager-runtime.js");
+      await handleExtensionsCommand(args, ctx, pi);
     },
   });
 
@@ -87,61 +32,40 @@ export default function extensionsManager(pi: ExtensionAPI) {
     handler: async (ctx) => {
       // Shortcut contexts satisfy everything the manager uses at runtime
       // (ui, cwd, trust); command-only members like reload() are guarded.
+      const { executeExtensionsCommand } = await import("./manager-runtime.js");
       await executeExtensionsCommand("", ctx as ExtensionCommandContext, pi);
     },
   });
 
-  // The context of the running session. pi retires it on reload and session
-  // replacement, so background work must look it up instead of capturing it.
-  let activeCtx: ExtensionContext | undefined;
-
-  async function updateStatusBar(ctx: ExtensionCommandContext | ExtensionContext): Promise<void> {
-    await updateExtmgrStatus(ctx, pi);
-  }
-
-  async function bootstrapSession(ctx: ExtensionCommandContext | ExtensionContext): Promise<void> {
-    // Restore persisted auto-update config into session entries so sync lookups are valid.
-    await hydrateAutoUpdateConfig(pi, ctx);
-    await refreshLocalCompletionIndex(ctx.cwd, isProjectTrusted(ctx)).catch((error) => {
-      logWarning("Failed to load local completions:", error);
-    });
-
-    if (!ctx.hasUI) {
-      stopAutoUpdateTimer();
-      return;
-    }
-
-    const config = getAutoUpdateConfig(ctx);
-    if (config.enabled && config.intervalMs > 0) {
-      const getCtx: ContextProvider = () => (activeCtx === ctx ? ctx : undefined);
-      startAutoUpdateTimer(pi, getCtx, createAutoUpdateNotificationHandler(ctx));
-    } else {
-      stopAutoUpdateTimer();
-    }
-
-    setImmediate(() => {
-      if (activeCtx !== ctx) return;
-      updateStatusBar(ctx).catch((err) => {
-        logWarning("Status update failed:", err);
-      });
-    });
-  }
-
-  pi.on("session_start", async (event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
+    stopSessionRuntime?.();
+    stopSessionRuntime = undefined;
     activeCtx = ctx;
     setConsoleDiagnosticsEnabled(ctx.mode !== "tui");
-    if (event.reason === "reload") {
-      // A stale marker is harmless; an unwritable cache dir must not stop
-      // the session from starting up (status, completions, update checks).
-      await clearReloadRequired().catch((error) => {
-        logWarning("Failed to clear the reload-required marker:", error);
-      });
-    }
-    await bootstrapSession(ctx);
+
+    // Don't hold extension loading open for config hydration, completion indexing,
+    // scheduled update setup, or status discovery.
+    setImmediate(() => {
+      if (activeCtx !== ctx) return;
+      void import("./session-runtime.js")
+        .then(({ bootstrapSession }) => bootstrapSession(event, ctx, pi, () => activeCtx === ctx))
+        .then((stopRuntime) => {
+          if (!stopRuntime) return;
+          if (activeCtx === ctx) {
+            stopSessionRuntime = stopRuntime;
+          } else {
+            stopRuntime();
+          }
+        })
+        .catch((error) => {
+          logWarning("Failed to initialize extmgr session state:", error);
+        });
+    });
   });
 
   pi.on("session_shutdown", () => {
     activeCtx = undefined;
-    stopAutoUpdateTimer();
+    stopSessionRuntime?.();
+    stopSessionRuntime = undefined;
   });
 }

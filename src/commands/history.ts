@@ -14,16 +14,7 @@ import {
   querySessionChanges,
 } from "../utils/history.js";
 import { notify } from "../utils/notify.js";
-
-export const HISTORY_ACTIONS: readonly ChangeAction[] = [
-  "extension_toggle",
-  "extension_delete",
-  "package_install",
-  "package_update",
-  "package_remove",
-  "cache_clear",
-  "auto_update_config",
-];
+import { HISTORY_ACTIONS } from "./history-actions.js";
 
 interface ParsedHistoryArgs {
   filters: HistoryFilters;

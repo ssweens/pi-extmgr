@@ -19,6 +19,14 @@ import { parseDuration } from "../src/utils/settings.js";
 import { createMockHarness } from "./helpers/mocks.js";
 import { mockPackageCatalog } from "./helpers/package-catalog.js";
 
+async function waitFor(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!condition()) {
+    if (Date.now() >= deadline) assert.fail("condition was not met within 2 seconds");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 void test("refreshKnownUpdates clears stale markers after an external package update", async () => {
   const restoreCatalog = mockPackageCatalog({
     packages: [{ source: "npm:demo-pkg", name: "demo-pkg", scope: "global" }],
@@ -121,13 +129,15 @@ void test("session start for a replacement session stops existing timer when aut
     };
   }
 
-  const handlers: Record<string, ((event: unknown, ctx: SessionCtx) => Promise<void>) | undefined> =
-    {};
+  const handlers: Record<
+    string,
+    ((event: unknown, ctx: SessionCtx) => void | Promise<void>) | undefined
+  > = {};
 
   const pi = {
     registerCommand: () => undefined,
     registerShortcut: () => undefined,
-    on: (event: string, handler: (event: unknown, ctx: SessionCtx) => Promise<void>) => {
+    on: (event: string, handler: (event: unknown, ctx: SessionCtx) => void | Promise<void>) => {
       handlers[event] = handler;
     },
     appendEntry: () => undefined,
@@ -175,10 +185,11 @@ void test("session start for a replacement session stops existing timer when aut
     extensionsManager(pi as unknown as ExtensionAPI);
 
     await handlers.session_start?.({}, enabledCtx);
-    assert.equal(isAutoUpdateRunning(), true);
+    await waitFor(() => isAutoUpdateRunning());
 
     await handlers.session_start?.({ reason: "resume" }, disabledCtx);
     assert.equal(isAutoUpdateRunning(), false);
+    await handlers.session_shutdown?.({}, disabledCtx);
   } finally {
     restoreCatalog();
     stopAutoUpdateTimer();
@@ -186,12 +197,14 @@ void test("session start for a replacement session stops existing timer when aut
 });
 
 void test("session start after a reload still boots when the reload marker cannot be cleared", async () => {
-  const handlers: Record<string, ((event: unknown, ctx: unknown) => Promise<void>) | undefined> =
-    {};
+  const handlers: Record<
+    string,
+    ((event: unknown, ctx: unknown) => void | Promise<void>) | undefined
+  > = {};
   const pi = {
     registerCommand: () => undefined,
     registerShortcut: () => undefined,
-    on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => {
+    on: (event: string, handler: (event: unknown, ctx: unknown) => void | Promise<void>) => {
       handlers[event] = handler;
     },
     appendEntry: () => undefined,
@@ -228,7 +241,7 @@ void test("session start after a reload still boots when the reload marker canno
     extensionsManager(pi as unknown as ExtensionAPI);
 
     await handlers.session_start?.({ reason: "reload" }, ctx);
-    assert.equal(isAutoUpdateRunning(), true);
+    await waitFor(() => isAutoUpdateRunning());
   } finally {
     console.warn = originalWarn;
     restoreCatalog();

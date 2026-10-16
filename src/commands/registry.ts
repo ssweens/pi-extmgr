@@ -3,7 +3,6 @@ import {
   type ExtensionCommandContext,
   VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { type AutocompleteItem } from "@earendil-works/pi-tui";
 import { inspectInstalledPackageCompatibility } from "../doctor/compatibility.js";
 import { findRuntimeConflicts } from "../doctor/conflicts.js";
 import { getRuntimeOwners } from "../doctor/runtime.js";
@@ -15,8 +14,8 @@ import { showInstalledPackagesLegacy, showInteractive, showListOnly } from "../u
 import { notify } from "../utils/notify.js";
 import { handleAutoUpdateSubcommand } from "./auto-update.js";
 import { clearMetadataCacheCommand } from "./cache.js";
-import { getLocalCompletionIndex, getProfileCompletionOptions } from "./completion.js";
-import { HISTORY_ACTIONS, handleHistorySubcommand } from "./history.js";
+import { handleHistorySubcommand } from "./history.js";
+import { COMMAND_METADATA } from "./metadata.js";
 import { handleInstallSubcommand, INSTALL_USAGE } from "./install.js";
 import { handleProfileSubcommand } from "./profile.js";
 import { handleTrashSubcommand } from "./trash.js";
@@ -94,21 +93,17 @@ export function showNonInteractiveHelp(ctx: ExtensionCommandContext): void {
 
 const COMMAND_DEFINITIONS: Record<CommandId, CommandDefinition> = {
   local: {
-    id: "local",
-    description: "Open interactive manager (default)",
+    ...COMMAND_METADATA.local,
     runInteractive: (_tokens, ctx, pi) => showInteractive(ctx, pi),
     runNonInteractive: (_tokens, ctx) => showListOnly(ctx),
   },
   list: {
-    id: "list",
-    description: "List local extensions",
+    ...COMMAND_METADATA.list,
     runInteractive: (_tokens, ctx) => showListOnly(ctx),
     runNonInteractive: (_tokens, ctx) => showListOnly(ctx),
   },
   remote: {
-    id: "remote",
-    description: "Browse community packages",
-    aliases: ["packages"],
+    ...COMMAND_METADATA.remote,
     runInteractive: async (tokens, ctx, pi) => {
       await showRemote(tokens.join(" "), ctx, pi);
     },
@@ -118,14 +113,12 @@ const COMMAND_DEFINITIONS: Record<CommandId, CommandDefinition> = {
     },
   },
   installed: {
-    id: "installed",
-    description: "List installed packages",
+    ...COMMAND_METADATA.installed,
     runInteractive: (_tokens, ctx, pi) => showInstalledPackagesLegacy(ctx, pi),
     runNonInteractive: (_tokens, ctx, pi) => showInstalledPackagesList(ctx, pi),
   },
   search: {
-    id: "search",
-    description: "Search npm for packages",
+    ...COMMAND_METADATA.search,
     runInteractive: async (tokens, ctx, pi) => {
       await showRemote(`search ${tokens.join(" ")}`, ctx, pi);
     },
@@ -135,8 +128,7 @@ const COMMAND_DEFINITIONS: Record<CommandId, CommandDefinition> = {
     },
   },
   install: {
-    id: "install",
-    description: "Install a package",
+    ...COMMAND_METADATA.install,
     runInteractive: async (tokens, ctx, pi) => {
       if (tokens.length > 0) await handleInstallSubcommand(tokens, ctx, pi);
       else await showRemote("install", ctx, pi);
@@ -147,9 +139,7 @@ const COMMAND_DEFINITIONS: Record<CommandId, CommandDefinition> = {
         : notify(ctx, INSTALL_USAGE, "info"),
   },
   remove: {
-    id: "remove",
-    description: "Remove an installed package",
-    aliases: ["uninstall"],
+    ...COMMAND_METADATA.remove,
     runInteractive: (tokens, ctx, pi) =>
       tokens.length > 0 ? removePackage(tokens.join(" "), ctx, pi) : promptRemove(ctx, pi),
     runNonInteractive: (tokens, ctx, pi) =>
@@ -158,26 +148,22 @@ const COMMAND_DEFINITIONS: Record<CommandId, CommandDefinition> = {
         : notify(ctx, REMOVE_USAGE, "info"),
   },
   update: {
-    id: "update",
-    description: "Preview or update selected packages",
+    ...COMMAND_METADATA.update,
     runInteractive: (tokens, ctx, pi) => handleUpdateSubcommand(tokens, ctx, pi),
     runNonInteractive: (tokens, ctx, pi) => handleUpdateSubcommand(tokens, ctx, pi),
   },
   history: {
-    id: "history",
-    description: "View extension change history",
+    ...COMMAND_METADATA.history,
     runInteractive: (tokens, ctx, pi) => handleHistorySubcommand(ctx, pi, tokens, false),
     runNonInteractive: (tokens, ctx, pi) => handleHistorySubcommand(ctx, pi, tokens, true),
   },
   "clear-cache": {
-    id: "clear-cache",
-    description: "Clear metadata cache",
+    ...COMMAND_METADATA["clear-cache"],
     runInteractive: (_tokens, ctx, pi) => clearMetadataCacheCommand(ctx, pi),
     runNonInteractive: (_tokens, ctx, pi) => clearMetadataCacheCommand(ctx, pi),
   },
   trash: {
-    id: "trash",
-    description: "List, restore, or purge local extension trash",
+    ...COMMAND_METADATA.trash,
     runInteractive: async (tokens, ctx, pi) => {
       await handleTrashSubcommand(tokens, ctx, pi);
     },
@@ -186,20 +172,17 @@ const COMMAND_DEFINITIONS: Record<CommandId, CommandDefinition> = {
     },
   },
   "auto-update": {
-    id: "auto-update",
-    description: "Configure scheduled update checks",
+    ...COMMAND_METADATA["auto-update"],
     runInteractive: (tokens, ctx, pi) => handleAutoUpdateSubcommand(tokens, ctx, pi),
     runNonInteractive: (tokens, ctx, pi) => handleAutoUpdateSubcommand(tokens, ctx, pi),
   },
   doctor: {
-    id: "doctor",
-    description: "Inspect runtime command/tool ownership and conflicts",
+    ...COMMAND_METADATA.doctor,
     runInteractive: (_tokens, ctx, pi) => showDoctor(ctx, pi),
     runNonInteractive: (_tokens, ctx, pi) => showDoctor(ctx, pi),
   },
   profile: {
-    id: "profile",
-    description: "Save, import, check, review, or apply a package profile",
+    ...COMMAND_METADATA.profile,
     runInteractive: (tokens, ctx, pi) => handleProfileSubcommand(tokens, ctx, pi),
     runNonInteractive: (tokens, ctx, pi) => handleProfileSubcommand(tokens, ctx, pi),
   },
@@ -240,77 +223,6 @@ export function runResolvedCommand(
   const definition = COMMAND_DEFINITIONS[resolved.id];
   const runner = ctx.hasUI ? definition.runInteractive : definition.runNonInteractive;
   return runner(resolved.args, ctx, pi);
-}
-
-function completionItems(options: string[], prefix: string): AutocompleteItem[] | null {
-  const matches = options.filter((option) => option.toLowerCase().startsWith(prefix.toLowerCase()));
-  return matches.length > 0 ? matches.map((value) => ({ value, label: value })) : null;
-}
-
-export function getExtensionsAutocompleteItems(prefix: string): AutocompleteItem[] | null {
-  const commandPrefix = (prefix ?? "").trimStart();
-  if (commandPrefix.includes(" ")) {
-    const trailingSpace = /\s$/.test(commandPrefix);
-    const tokens = commandPrefix.replace(/^\//, "").split(/\s+/).filter(Boolean);
-    const command = tokens.shift()?.toLowerCase() ?? "";
-    const activePrefix = trailingSpace ? "" : (tokens.pop() ?? "");
-    const completedArgs = tokens;
-    const local = getLocalCompletionIndex();
-
-    if ((command === "remove" || command === "uninstall") && completedArgs.length === 0) {
-      return completionItems(local.installedPackages, activePrefix);
-    }
-    if (command === "update" && completedArgs.length === 0) {
-      return completionItems(["--all", "--preview", ...local.installedPackages], activePrefix);
-    }
-    if (command === "profile") {
-      const options = getProfileCompletionOptions(completedArgs);
-      return options ? completionItems(options, activePrefix) : null;
-    }
-    if (command === "history") {
-      if (completedArgs.at(-1) === "--action") {
-        return completionItems([...HISTORY_ACTIONS], activePrefix);
-      }
-      // Completions only run in the interactive editor, where --global is refused.
-      return completionItems(
-        ["--action", "--failed", "--success", "--limit", "--package", "--since"],
-        activePrefix
-      );
-    }
-    if (command === "trash") {
-      if (completedArgs.length === 0) {
-        return completionItems(["list", "restore", "purge"], activePrefix);
-      }
-      return completedArgs.length === 1 && completedArgs[0]?.toLowerCase() === "purge"
-        ? completionItems(["all"], activePrefix)
-        : null;
-    }
-    const argumentOptions: Record<string, string[]> = {
-      install: ["--global", "--project"],
-      "auto-update": ["daily", "weekly", "monthly", "never"],
-    };
-    return completionItems(argumentOptions[command] ?? [], activePrefix);
-  }
-
-  const items = Object.values(COMMAND_DEFINITIONS).flatMap((def) => {
-    const base = [{ value: def.id, description: def.description }];
-    const aliases = (def.aliases ?? []).map((alias) => ({
-      value: alias,
-      description: `${def.description} (alias)`,
-    }));
-    return [...base, ...aliases];
-  });
-
-  const safePrefix = (prefix ?? "").toLowerCase();
-  const filtered = items.filter(
-    (item) =>
-      item.value.toLowerCase().startsWith(safePrefix) ||
-      item.description.toLowerCase().includes(safePrefix)
-  );
-
-  return filtered.length > 0
-    ? filtered.map((item) => ({ value: item.value, label: `${item.value} - ${item.description}` }))
-    : null;
 }
 
 export function showUnknownCommandMessage(
